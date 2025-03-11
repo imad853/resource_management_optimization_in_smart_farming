@@ -114,8 +114,7 @@ TO BE DETERMINED LATER
 We welcome contributions! Please fork the repository and submit pull requests with clear descriptions and testing results.
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
+This project is licensed under the GPLV2 license
 ## Contact
 For any queries, reach out to `imadeddine.smail@ensia.edu.dz` or open an issue on GitHub.
 ## please, write all your emails here
