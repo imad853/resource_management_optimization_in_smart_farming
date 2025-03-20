@@ -117,5 +117,6 @@ We welcome contributions! Please fork the repository and submit pull requests wi
 This project is licensed under the GPLV2 license
 ## Contact
 For any queries, reach out to `imadeddine.smail@ensia.edu.dz` or open an issue on GitHub.
+- mohamed.bahae.eddine.chergui@ensia.edu.dz
 ## please, write all your emails here
 
