@@ -1,53 +1,70 @@
-import pandas as pd 
-from  goal_state import GoalState
-import itertools
+import pandas as pd
+import itertools 
+from itertools import count
+from goal_state import GoalState
+import heapq
 
 class Node:
-    def __init__(self,state,g=0,f=0):
+    def __init__(self, state, g=0, f=0):
         self.state = state
         self.g = g
         self.f = f
+        self.parent = None  # Important for path reconstruction
 
     def __hash__(self):
-        # Convert the dict to a frozenset of items for hashing
         return hash(frozenset(self.state.items()))
 
     def __eq__(self, other):
         return isinstance(other, Node) and self.state == other.state
-    
+
+    # Add these comparison methods
+    def __lt__(self, other):
+        # Compare nodes based on f-score (total cost)
+        return self.f < other.f
+
+    def __gt__(self, other):
+        return self.f > other.f
+
     def copy(self):
-            return Node(self.state.copy(), self.g)
+        new_node = Node(self.state.copy(), self.g, self.f)
+        new_node.parent = self.parent
+        return new_node
 
 class optimization_problem:
-    def __init__(self, initial_state,df):
+    def __init__(self, initial_state, df):
         self.df = df
         self.initial_state = initial_state
         self.transition_model = self._transition_model()
-    
+        
+        goal = GoalState()
+        
+        goal.estimate_optimal_params(
+            self.initial_state['label'],
+            self.initial_state['growth_stage'],
+            self.initial_state['soil_type'],
+            self.initial_state['crop_density'] , 
+            self.df , 
+        )
+        self.goal = goal
+        self.optimal_ranges = {
+            'soil_moisture': (self.goal.optimal_soil_moisture -2.5, self.goal.optimal_soil_moisture + 2.5),
+            'ph': (self.goal.optimal_ph - 1, self.goal.optimal_ph + 1),
+            'N': (self.goal.optimal_n - 2.5, self.goal.optimal_n + 2.5),
+            'P': (self.goal.optimal_p - 2.5, self.goal.optimal_p + 2.5),
+            'K': (self.goal.optimal_k - 2.5, self.goal.optimal_k + 2.5),
+        }
 
-
-    def in_range(self,actual, target, tolerance):
+    def in_range(self, actual, target, tolerance):
         return abs(actual - target) <= tolerance
 
     def goalstate(self, node):
-        goal = GoalState(
-            self.initial_state['label'],
-            self.initial_state['growth_stage'],
-            self.initial_state['growth_type'],
-            self.initial_state['crop_density']
-        )
-        
         return (
-        self.in_range(node.state['soil_moisture'], goal.optimal_soil_moisture, 5) and
-        self.ssin_range(node.state['ph'], goal.optimal_ph, 0.3) and
-        self.in_range(node.state['N'], goal.optimal_n, 10) and
-        self.in_range(node.state['P'], goal.optimal_p, 5) and
-        self.in_range(node.state['K'], goal.optimal_k, 5)
-    )
-    
-    
-
-
+            self.in_range(node.state['soil_moisture'], self.goal.optimal_soil_moisture, 2.5) and
+            self.in_range(node.state['ph'], self.goal.optimal_ph, 1) and
+            self.in_range(node.state['N'], self.goal.optimal_n, 15) and
+            self.in_range(node.state['P'], self.goal.optimal_p, 10) and
+            self.in_range(node.state['K'], self.goal.optimal_k, 10)
+        )
 
     def priorities(self):
         s = self.initial_state  # shorthand
@@ -97,12 +114,6 @@ class optimization_problem:
             water_priority -= 0.05
             fertilizer_priority += 0.05
 
-        # Resource constraints
-        water_priority -= s['water_availability'] * 0.1
-        if s['water_availability'] < 0.3:
-            water_priority += 0.3
-            irrigation_frequency_priority += 0.1
-
         # Irrigation system
         if s['irrigation_system'] == "drip":
             irrigation_frequency_priority += 0.1
@@ -132,37 +143,27 @@ class optimization_problem:
             self.penalty('P', state['P']) +
             self.penalty('K', state['K'])
         )
-
         p = self.priorities()
         cost_penalty = (
             p['water_priority'] * state.get('water_used', 0) +
             p['fertilizer_priority'] * state.get('fertilizer_used', 0)
         )
-
-        if 'WUE' in state and 'WUE' in self.optimal_ranges:
-            deviation_score += self.penalty('WUE', state['WUE'])
-
         return deviation_score + cost_penalty
 
-    def get_valid_actions(self):
+    def get_valid_actions(self, action=None):
         valid_actions = []
-        water_options = [0, 10, 20]  # liters/m^2
+        water_options = [0, 10, 20]
         N_options = [0, 5, 10, 20]
         P_options = [0, 5, 10, 20]
-        K_options = [0, 5, 10, 20]  # kg/m^2
-
-        # Generate all possible combinations
+        K_options = [0, 5, 10, 20]
         for water, n, p, k in itertools.product(water_options, N_options, P_options, K_options):
-            # Optional constraint check
             if (water <= self._calculate_max_water()) and (n + p + k <= self._calculate_max_fertilizer()):
-                action = {
-                    'water': water,
-                    'N': n,
-                    'P': p,
-                    'K': k
-                }
-                valid_actions.append(action)
-
+                valid_actions.append({
+                    "water_added": water,
+                    "N_added": n,
+                    "P_added": p,
+                    "K_added": k
+                })
         return valid_actions
 
     def _calculate_max_water(self):
@@ -174,66 +175,105 @@ class optimization_problem:
 
     def _calculate_max_fertilizer(self):
         soil_type = str(self.initial_state['soil_type'])
-        ranges = self.goalstate()
+        ranges = self.optimal_ranges
         limits = []
-
         for nutrient in ['N', 'P', 'K']:
             current = self.initial_state[nutrient]
             max_val = ranges[nutrient][1]
             gain = self.transition_model["apply_fertilizer"]["npk_availability_increase"][soil_type][nutrient]
             limits.append((max_val - current) / gain if gain > 0 else float('inf'))
-
         return max(0, min(limits))
 
     def apply_action(self, node, action):
-        water_added, fertilizer_added = action
         soil_type = str(node['soil_type'])
-
         new_node = node.copy()
-
         delta_moisture = 0
-        if water_added > 0:
+    
+        # Apply water action
+        if action["water_added"] > 0:
             moisture_per_L = self.transition_model["add_water"]["soil_moisture_increase_per_L"][soil_type]
-            delta_moisture = water_added * moisture_per_L
+            delta_moisture = action["water_added"] * moisture_per_L
             new_node['soil_moisture'] += delta_moisture
-
             uptake_per_1pct = self.transition_model["add_water"]["npk_uptake_increase_per_1_percent_moisture"][soil_type]
             for nutrient in ['N', 'P', 'K']:
                 new_node[nutrient] += delta_moisture * uptake_per_1pct[nutrient]
-                new_node[nutrient] = min(new_node[nutrient], 1.0)
-
-        new_node['water_used'] += water_added
-
-        if fertilizer_added > 0:
+                new_node[nutrient] = max(new_node[nutrient], 1.0)
+    
+        new_node['water_used'] += action["water_added"]
+        total_fertilizer = action["N_added"] + action["P_added"] + action["K_added"]
+    
+        # Apply fertilizer action
+        if total_fertilizer > 0:
             npk_gain = self.transition_model["apply_fertilizer"]["npk_availability_increase"][soil_type]
             for nutrient in ['N', 'P', 'K']:
-                new_node[nutrient] += fertilizer_added * npk_gain[nutrient]
-                new_node[nutrient] = min(new_node[nutrient], 1.0)
-
-        new_node['fertilizer_used'] += fertilizer_added
-
+                new_node[nutrient] += action[nutrient + "_added"] * npk_gain[nutrient]
+                new_node[nutrient] = max(new_node[nutrient], 1.0)
+    
+        new_node['fertilizer_used'] += total_fertilizer
+    
+         # Print current NPK values after applying action
+        print("\nAfter applying action:")
+        print(f"  Water added: {action['water_added']}L")
+        print(f"  N added: {action['N_added']}kg, P added: {action['P_added']}kg, K added: {action['K_added']}kg")
+        print("Current nutrient levels:")
+        print(f"  N: {new_node['N']:.3f} (Target: {self.goal.optimal_n:.1f} ± {self.optimal_ranges['N'][1]-self.goal.optimal_n:.1f})")
+        print(f"  P: {new_node['P']:.3f} (Target: {self.goal.optimal_p:.1f} ± {self.optimal_ranges['P'][1]-self.goal.optimal_p:.1f})")
+        print(f"  K: {new_node['K']:.3f} (Target: {self.goal.optimal_k:.1f} ± {self.optimal_ranges['K'][1]-self.goal.optimal_k:.1f})")
+    
         return new_node
 
     def expand_node(self, node):
         children = []
-        for action in self.get_actions():
-            child_node = self.apply_action(node, action)
+        for action in self.get_valid_actions():
+            new_state = self.apply_action(node.state.copy(), action)
             g_cost = self.cost_function(action)
-            h = self.heuristic(child_node)
-            child_node.g = g_cost + node.g
-            child_node.f = g_cost + h
+            h = self.heuristic(new_state)
+            child_node = Node(new_state, node.g + g_cost, node.g + g_cost + h)
+            child_node.parent = node
             children.append(child_node)
         return children
+    
+    def reconstruct_path(self, node):
+        path = []
+        while node:
+            path.append(node)
+            node = getattr(node, 'parent', None)  # Safe access to parent
+        return path[::-1]  # Reverse to get start-to-goal order
+
+    def solve(self):
+        print("\n=== Starting A* Search ===")
+        print(f"Initial state: {self.initial_state}")
+        print(f"Goal ranges: {self.optimal_ranges}")
+        start_node = Node(self.initial_state, g=0, f=self.heuristic(self.initial_state))
+        open_list = []
+        heapq.heappush(open_list, (start_node.f, start_node))  # Store (priority, node)
+        closed_set = set()
+        steps = 0
+
+        while open_list:
+            current_f, current_node = heapq.heappop(open_list)  # Get both priority and node
+            steps += 1
+
+            if self.goalstate(current_node):
+                print("Solution found after:")
+                return self.reconstruct_path(current_node)
+
+            if current_node in closed_set:
+                continue
+            closed_set.add(current_node)
+
+            for child in self.expand_node(current_node):
+                if child not in closed_set:
+                    heapq.heappush(open_list, (child.f, child))  # Push (priority, node)
+
+        print(f"⚠️ Stopped (no solution found).")
+        return None
 
     def _transition_model(self):
         return {
             "add_water": {
                 "units": "1 L/m²",
-                "soil_moisture_increase_per_L": {
-                    "1": 1.0,
-                    "2": 0.6,
-                    "3": 0.3
-                },
+                "soil_moisture_increase_per_L": {"1": 1.0, "2": 0.6, "3": 0.3},
                 "npk_uptake_increase_per_1_percent_moisture": {
                     "1": {"N": 0.02, "P": 0.015, "K": 0.018},
                     "2": {"N": 0.025, "P": 0.02, "K": 0.022},
@@ -250,120 +290,78 @@ class optimization_problem:
             }
         }
 
-   
-    def cost_function(self,action) :
-        if (self.initial_state['water_availability'] == "high" and self.initial_state['fertilizer_availability'] == "high") or (self.initial_state['water_availability'] == "medium" and self.initial_state['fertilizer_availability'] == "medium") or ((self.initial_state['water_availability'] == "low" and self.initial_state['fertilizer_availability']== "low"))   :
-            """
-            if both have same availability levels -> we will take into consideration only that water is less expensive then fertilizer 
-            """
-            water_cost = action["water_added"]
-            fertilizer_cost = (action["N_added"] + action["P_added"] + action["K_added"])*2
-        elif self.initial_state['water_availability'] == "medium" and self.initial_state['fertilizer_availability'] == "high" or (self.initial_state['water_availability'] == "low" and self.initial_state['fertilizer_availability'] == "medium") :
-            """
-            Here since water is available in medium levels, we will consider that it costs the same as using fertilizer
-            """
-            water_cost = action["water_added"]
-            fertilizer_cost = action["N_added"] + action["P_added"] + action["K_added"]
-        elif (self.initial_state['water_availability'] == "high" and self.initial_state['fertilizer_availability'] == "medium") or (self.initial_state['water_availability'] == "medium" and self.initial_state['fertilizer_availability'] == "low")  :
-            water_cost = action["water_added"]
-            fertilizer_cost = (action["N_added"] + action["P_added"] + action["K_added"])*3
-        elif (self.initial_state['water_availability'] == "low" and self.initial_state['fertilizer_availability'] == "high") :
-            water_cost = action["water_added"]*2
-            fertilizer_cost = (action["N_added"] + action["P_added"] + action["K_added"])
-        elif self.initial_state['water_availability'] == "high" and self.initial_state['fertilizer_availability'] == "low" :
-            water_cost = action["water_added"]
-            fertilizer_cost = (action["N_added"] + action["P_added"] + action["K_added"])*4
+    def cost_function(self, action):
+        wa = self.initial_state['water_availability']
+        fa = self.initial_state['fertilizer_availability']
+        water = action["water_added"]
+        fert = action["N_added"] + action["P_added"] + action["K_added"]
 
-        return water_cost + fertilizer_cost
+        if (wa == "high" and fa == "high") or (wa == "medium" and fa == "medium") or (wa == "low" and fa == "low"):
+            return water + fert * 2
+        elif (wa == "medium" and fa == "high") or (wa == "low" and fa == "medium"):
+            return water + fert
+        elif (wa == "high" and fa == "medium") or (wa == "medium" and fa == "low"):
+            return water + fert * 3
+        elif wa == "low" and fa == "high":
+            return water * 2 + fert
+        elif wa == "high" and fa == "low":
+            return water + fert * 4
+        return water + fert
 
+# === Initial state ===
+initial_state = {
+    'soil_moisture': 5.28,
+    'N': 24.33,
+    'P': 24.83,
+    'K': 20.33,
+    'ph': 6.5,
+    'label': "rice",
+    'soil_type': 3,
+    'temperature': 28,
+    'crop_density': 14,
+    'humidity': 45,
+    'rainfall_forecast': 6,
+    'growth_stage': 1,
+    'growth_type': "monocot",
+    'water_availability': "medium",
+    'fertilizer_availability': "high",
+    'irrigation_system': 'drip',
+    'water_used': 0.0,
+    'fertilizer_used': 0.0
+}
 
 def main():
-    # === Initial State ===
-    print("Initializing the initial state with soil moisture, nutrients, and other factors...\n")
+    import os
     
-    # Instantiate the optimization problem with the initial state
-    df = pd.read_csv("FS25.csv")
-    farm_problem = optimization_problem(initial_state,df)
+    # Set working directory to script location
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
     
-    # Creating a minimal Node class to represent a state and its associated costs
-    print("Defining a simple Node class to represent a state and its associated costs...\n")
-
-
-    # === 1. Create initial node ===
-    print("1. Testing initial state:")
-    root = Node(initial_state)  # Creating the root node with the initial state
-    print(f"Initial state: {root.state}\n")
-
-    # === 2. Test heuristic ===
-    print("2. Heuristic value of the state:")
-    h = farm_problem.heuristic(root.state)  # Calculate heuristic for the initial state
-    print(f"Heuristic h(s): {h}\n")
-
-    # === .. Test cost ===
-    print("3. Cost value of the state:")
-    g = farm_problem.cost(root.state)  # Calculate cost for the initial state
-    print(f"Cost g(s): {g}\n")
-
-    # === 4. Testing if the action is valid ===
-    print("4. Testing if the action is valid:")
+    # Debug: Print current directory and files
+    print("Current directory:", os.getcwd())
+    print("Files here:", os.listdir())
     
-    # Assuming you have a method to get valid actions.
-    valid_actions = farm_problem.get_valid_actions(root.state)
+    # Now read the CSV
+    try:
+        df = pd.read_csv("FS25.csv")
+        farm_problem = optimization_problem(initial_state, df)        
+        initial_node = Node(initial_state)
+        solution_path = farm_problem.solve()
+        if solution_path:
+            print("\n✅ Solution found in", len(solution_path) - 1, "steps:")
+            for i, node in enumerate(solution_path):
+                print(f"\nStep {i}:")
+                for k, v in node.state.items():
+                    print(f"  {k}: {round(v, 3) if isinstance(v, float) else v}")
+        else:
+            print("\n❌ No solution found.")
+    
+    except FileNotFoundError:
+        print("\n❌ Error: 'FS25.csv' not found in:", os.getcwd())
+        print("Available files:", os.listdir())
+    
+    except Exception as e:
+        print("\n❌ An error occurred:", str(e))
 
-    # If no valid actions exist, print an appropriate message.
-    if valid_actions:
-        print("Valid actions are:")
-        for action in valid_actions:
-            print(f"Action: {action}")
-    else:
-        print("No valid actions available.\n")
-
-    # === 5. Test apply_action ===
-    print("5. Applying one action:")
-    test_action = (0.5, 0.2)  # water amount = 0.5, fertilizer amount = 0.2
-    new_state = farm_problem.apply_action(root.state.copy(), test_action)  # Apply the action to the state
-    print(f"New state after action {test_action}: {new_state}\n")
-
-    # === 6. Test expand_node ===
-    print("6. Expanding node:")
-    children = farm_problem.expand_node(root)  # Expand the node to generate child nodes
-    for idx, child in enumerate(children):
-        print(f"Child {idx+1}:")
-        print(f"State: {child.state}")
-        print(f"g: {child.g}, f: {child.f}")
-        print()
-
-    # === 7. Test goal ===
-    print("7. Testing if it is a goal state:")
-
-    # Perform goal test
-    goal = farm_problem.goal_test(root.state)
-
-    # Print whether the current state is a goal state
-    if goal:
-        print(f"The current state {root.state} is a goal state.")
-    else:
-        print(f"The current state {root.state} is NOT a goal state.\n")
-
-
-# Check if this is the main program being executed
-if __name__ == "main":
+if __name__ == "__main__":
     main()
-
-
-initial_state = {
-        'soil_moisture': 0.25,  # Initial soil moisture value (arbitrary value between 0 and 1)
-        'N': 0.15,  # Initial nitrogen content
-        'P': 0.10,  # Initial phosphorus content
-        'K': 0.12,  # Initial potassium content
-        'label': "rice",
-        'soil_type': 1,  # Soil type, representing specific characteristics of soil
-        'temperature': 28,  # Current temperature in degrees Celsius
-        'crop_density': 14,
-        'humidity': 45,  # Current humidity percentage
-        'rainfall': 6,  # Expected rainfall forecast (in mm)
-        'growth_stage': 1,  # Growth stage of the crop (vegetative stage)
-        'water_availability': 0.5,  # Water availability for irrigation (on a scale from 0 to 1)
-        'irrigation_system': 'drip',  # Type of irrigation system being used  
-        'fertilizer_used': 0.0  # Amount of fertilizer used (initialized to zero)
-    }
