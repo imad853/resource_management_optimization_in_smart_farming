@@ -3,6 +3,7 @@ import itertools
 from itertools import count
 from goal_state import GoalState
 import heapq
+import random
 
 class Node:
     def __init__(self, state, g=0, f=0):
@@ -307,6 +308,96 @@ class optimization_problem:
         elif wa == "high" and fa == "low":
             return water + fert * 4
         return water + fert
+
+    def pmx_crossover_continuous(parent1, parent2):
+        """
+        Modified PMX for continuous values that preserves segment relationships.
+        
+        Parameters:
+            parent1 (list): Resource values from first parent
+            parent2 (list): Resource values from second parent
+            
+        Returns:
+            list: Offspring resource values
+        """
+        size = len(parent1)
+        if size != len(parent2):
+            raise ValueError("Parents must have same number of resources")
+        
+        # Initialize offspring with None values
+        offspring = [None] * size
+        
+        # 1. Select random crossover segment
+        pt1 = random.randint(0, size - 2)
+        pt2 = random.randint(pt1 + 1, size - 1)
+        
+        # 2. Copy segment from parent1 to offspring
+        for i in range(pt1, pt2 + 1):
+            offspring[i] = parent1[i]
+        
+        # 3. Create value mapping between parents
+        value_map = {}
+        for i in range(pt1, pt2 + 1):
+            p1_val = parent1[i]
+            p2_val = parent2[i]
+            
+            # For continuous values, create proportional mapping
+            if p1_val != p2_val:
+                ratio = p2_val / p1_val if p1_val != 0 else 1
+                value_map[p1_val] = p2_val
+                value_map[p2_val] = p1_val
+        
+        # 4. Fill remaining positions from parent2 using mapping
+        for i in range(size):
+            if offspring[i] is None:  # Only fill empty positions
+                val = parent2[i]
+                
+                # If value exists in parent1's segment, apply mapping
+                while val in parent1[pt1:pt2+1] and val in value_map:
+                    val = value_map[val]
+                
+                offspring[i] = val
+        
+        return offspring
+    
+    
+
+    def resource_crossover(parent1, parent2):
+        """
+        Performs Partially Mapped Crossover (PMX) between two parent resource allocation plans.
+        Combines segments from both parents while maintaining valid resource allocations.
+        
+        Parameters:
+            parent1 (dict): First parent's resource allocation plan
+            parent2 (dict): Second parent's resource allocation plan
+            
+        Returns:
+            dict: New offspring combining characteristics from both parents
+        """
+        # Resources we want to optimize (must be in both parents)
+        resource_keys = ['water_used', 'N_added', 'P_added', 'K_added']
+        
+        # Verify parents have the required structure
+        if not all(key in parent1 and key in parent2 for key in resource_keys):
+            raise ValueError("Parents must contain all required resource keys")
+        
+        # Create offspring with non-resource attributes from parent1
+        offspring = {k: parent1[k] for k in parent1 if k not in resource_keys}
+        
+        # Convert resource values to lists for PMX processing
+        parent1_res = [parent1[k] for k in resource_keys]
+        parent2_res = [parent2[k] for k in resource_keys]
+        
+        # Perform PMX crossover on resources
+        offspring_res = pmx_crossover_continuous(parent1_res, parent2_res)
+        
+        # Add crossed-over resources to offspring
+        for i, key in enumerate(resource_keys):
+            offspring[key] = offspring_res[i]
+        
+        return offspring
+
+
 
 # === Initial state ===
 initial_state = {
