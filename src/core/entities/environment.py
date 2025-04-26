@@ -355,9 +355,6 @@ def two_point_crossover_continuous(parent1, parent2):
     
     return offspring
 
-
-import random
-
 def resource_crossover(parent1, parent2, method='two_point'):
 
 
