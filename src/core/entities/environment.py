@@ -309,93 +309,84 @@ class optimization_problem:
             return water + fert * 4
         return water + fert
 
-    def pmx_crossover_continuous(parent1, parent2):
-        """
-        Modified PMX for continuous values that preserves segment relationships.
-        
-        Parameters:
-            parent1 (list): Resource values from first parent
-            parent2 (list): Resource values from second parent
-            
-        Returns:
-            list: Offspring resource values
-        """
-        size = len(parent1)
-        if size != len(parent2):
-            raise ValueError("Parents must have same number of resources")
-        
-        # Initialize offspring with None values
-        offspring = [None] * size
-        
-        # 1. Select random crossover segment
-        pt1 = random.randint(0, size - 2)
-        pt2 = random.randint(pt1 + 1, size - 1)
-        
-        # 2. Copy segment from parent1 to offspring
-        for i in range(pt1, pt2 + 1):
-            offspring[i] = parent1[i]
-        
-        # 3. Create value mapping between parents
-        value_map = {}
-        for i in range(pt1, pt2 + 1):
-            p1_val = parent1[i]
-            p2_val = parent2[i]
-            
-            # For continuous values, create proportional mapping
-            if p1_val != p2_val:
-                ratio = p2_val / p1_val if p1_val != 0 else 1
-                value_map[p1_val] = p2_val
-                value_map[p2_val] = p1_val
-        
-        # 4. Fill remaining positions from parent2 using mapping
-        for i in range(size):
-            if offspring[i] is None:  # Only fill empty positions
-                val = parent2[i]
-                
-                # If value exists in parent1's segment, apply mapping
-                while val in parent1[pt1:pt2+1] and val in value_map:
-                    val = value_map[val]
-                
-                offspring[i] = val
-        
-        return offspring
-    
-    
+def uniform_crossover_continuous(parent1, parent2):
 
-    def resource_crossover(parent1, parent2):
-        """
-        Performs Partially Mapped Crossover (PMX) between two parent resource allocation plans.
-        Combines segments from both parents while maintaining valid resource allocations.
+    size = len(parent1)
+    if size != len(parent2):
+        raise ValueError("Parents must have same number of resources")
+    
+    offspring = []
+    
+    for i in range(size):
+        # Randomly choose gene from parent1 or parent2
+        if random.random() < 0.5:
+            offspring.append(parent1[i])
+        else:
+            offspring.append(parent2[i])
+    
+    return offspring
+
+def two_point_crossover_continuous(parent1, parent2):
+    """
+    Two-point crossover for continuous values.
+    Simply swaps a middle segment between two parents.
+    
+    Parameters:
+        parent1 (list): Resource values from first parent
+        parent2 (list): Resource values from second parent
         
-        Parameters:
-            parent1 (dict): First parent's resource allocation plan
-            parent2 (dict): Second parent's resource allocation plan
-            
-        Returns:
-            dict: New offspring combining characteristics from both parents
-        """
-        # Resources we want to optimize (must be in both parents)
-        resource_keys = ['water_used', 'N_added', 'P_added', 'K_added']
-        
-        # Verify parents have the required structure
-        if not all(key in parent1 and key in parent2 for key in resource_keys):
-            raise ValueError("Parents must contain all required resource keys")
-        
-        # Create offspring with non-resource attributes from parent1
-        offspring = {k: parent1[k] for k in parent1 if k not in resource_keys}
-        
-        # Convert resource values to lists for PMX processing
-        parent1_res = [parent1[k] for k in resource_keys]
-        parent2_res = [parent2[k] for k in resource_keys]
-        
-        # Perform PMX crossover on resources
-        offspring_res = pmx_crossover_continuous(parent1_res, parent2_res)
-        
-        # Add crossed-over resources to offspring
-        for i, key in enumerate(resource_keys):
-            offspring[key] = offspring_res[i]
-        
-        return offspring
+    Returns:
+        list: Offspring resource values
+    """
+    size = len(parent1)
+    if size != len(parent2):
+        raise ValueError("Parents must have same number of resources")
+    
+    # Initialize offspring by copying parent1
+    offspring = parent1.copy()
+    
+    # 1. Select two random crossover points
+    pt1 = random.randint(0, size - 2)
+    pt2 = random.randint(pt1 + 1, size - 1)
+    
+    # 2. Swap the segment between pt1 and pt2 from parent2
+    for i in range(pt1, pt2 + 1):
+        offspring[i] = parent2[i]
+    
+    return offspring
+
+
+import random
+
+def resource_crossover(parent1, parent2, method='two_point'):
+
+
+    resource_keys = ['water_used', 'N_added', 'P_added', 'K_added']
+    
+    # Verify parents have the required structure
+    if not all(key in parent1 and key in parent2 for key in resource_keys):
+        raise ValueError("Parents must contain all required resource keys")
+    
+    # Create offspring with non-resource attributes from parent1
+    offspring = {k: parent1[k] for k in parent1 if k not in resource_keys}
+    
+    # Convert resource values to lists for crossover processing
+    parent1_res = [parent1[k] for k in resource_keys]
+    parent2_res = [parent2[k] for k in resource_keys]
+    
+    # Select crossover method
+    if method == 'two_point':
+        offspring_res = two_point_crossover_continuous(parent1_res, parent2_res)
+    elif method == 'uniform':
+        offspring_res = uniform_crossover_continuous(parent1_res, parent2_res)
+    else:
+        raise ValueError(f"Unknown crossover method: {method}")
+    
+    # Add crossed-over resources to offspring
+    for i, key in enumerate(resource_keys):
+        offspring[key] = offspring_res[i]
+    
+    return offspring
 
 
 
