@@ -1,7 +1,7 @@
 import random
 import pandas as pd
 from environment import optimization_problem, Node
-
+import itertools 
 class GeneticAlgorithm:
 
     def __init__(self, problem, population_size=50, generations=1000, mutation_rate=0.1, 
@@ -66,20 +66,24 @@ class GeneticAlgorithm:
         return population[-1]
 
     def mutate(self, individual):
-        """Mutate one parameter of the action"""
+        """Mutate one parameter of the action (values now range from 0 to 100)"""
         mutated = individual.copy()
         param = random.choice(["water_added", "N_added", "P_added", "K_added"])
         
-        # Get possible values for this parameter (could use the get_valid_action() too)
-        options = {
-            "water_added": [-10, -5, 0, 10, 20],
-            "N_added": [-10, -5, 0, 5, 10, 20],
-            "P_added": [-10, -5, 0, 5, 10, 20],
-            "K_added": [-10, -5, 0, 5, 10, 20]
-        }[param]
+        # Possible mutation steps (can be adjusted)
+        mutation_steps = [-20, -10, -5, 5, 10, 20]
         
-        # Select new value different from current
-        new_val = random.choice([x for x in options if x != mutated[param]])
+        current_val = mutated[param]
+        
+        # Apply mutation while clamping between 0 and 100
+        step = random.choice(mutation_steps)
+        new_val = max(0, min(100, current_val + step))  # Clamp to [0, 100]
+        
+        # Ensure the value actually changes (avoid no-op mutations)
+        while new_val == current_val:
+            step = random.choice(mutation_steps)
+            new_val = max(0, min(100, current_val + step))
+        
         mutated[param] = new_val
         return mutated
 
@@ -155,94 +159,112 @@ class GeneticAlgorithm:
             offspring[key] = offspring_res[i]
         
         return offspring
-
+    def get_valid_actions(self, action=None):
+        valid_actions = []
+        # Create ranges from 0 to 100 in steps of 5 for all inputs
+        water_options = list(range(50, 101, 5))  # [0, 5, 10, ..., 100]
+        N_options = list(range(50, 101, 5))      # [0, 5, 10, ..., 100]
+        P_options = list(range(50, 101, 5))      # [0, 5, 10, ..., 100]
+        K_options = list(range(50, 101, 5))      # [0, 5, 10, ..., 100]
+        
+        for water, n, p, k in itertools.product(water_options, N_options, P_options, K_options):
+            valid_actions.append({
+                "water_added": water,
+                "N_added": n,
+                "P_added": p,
+                "K_added": k
+            })
+        return valid_actions
     def solve(self):
         """
         Run the genetic algorithm to find an optimal solution for the resource allocation problem.
-        
+        :
         Returns:
             tuple: (best_action, result_state, cost) - The optimal action, resulting state, and its cost
         """
         # Initialize population with random valid actions
         population = []
         for _ in range(self.population_size):
-            # Generate random valid actions
-            valid_actions = self.problem.get_valid_actions()
+            valid_actions = self.get_valid_actions()
             individual = random.choice(valid_actions)
             population.append(individual)
         
         best_individual = None
-        best_fitness = float('inf')  # We're minimizing cost
+        best_fitness = float('inf')
         best_state = None
         
         print(f"Starting GA optimization with {self.population_size} individuals for {self.generations} generations")
         
-        # Main GA loop
         for generation in range(self.generations):
             # Evaluate population
-            fitness_values = []
+            current_best = None
+            current_best_fitness = float('inf')
+            current_best_state = None
+            
             for individual in population:
-                # Apply action to initial state
                 result_state = self.problem.apply_action(self.problem.initial_state.copy(), individual)
-                # Calculate fitness (lower is better - we want minimum cost)
                 fitness = self.problem.cost_function(individual) + self.problem.heuristic(result_state)
-                fitness_values.append((individual, result_state, fitness))
-            
-            # Sort by fitness (lower is better)
-            fitness_values.sort(key=lambda x: x[2])
-            
-            # Update best individual if found
-            if fitness_values[0][2] < best_fitness:
-                best_individual = fitness_values[0][0]
-                best_state = fitness_values[0][1]
-                best_fitness = fitness_values[0][2]
                 
-            # Print progress every 50 generations
-            if generation % 50 == 0:
-                print(f"Generation {generation}: Best fitness = {best_fitness:.2f}")
-                print(f"  Best action: Water={best_individual['water_added']}L, " +
-                      f"N={best_individual['N_added']}kg, " +
-                      f"P={best_individual['P_added']}kg, " +
-                      f"K={best_individual['K_added']}kg")
+                if fitness < current_best_fitness:
+                    current_best = individual
+                    current_best_fitness = fitness
+                    current_best_state = result_state
             
-            # Check if we've reached the goal state
+            # Update global best if current generation found something better
+            if current_best_fitness < best_fitness:
+                best_individual = current_best
+                best_fitness = current_best_fitness
+                best_state = current_best_state
+            
+            # Print only the best individual of this generation
+            print(f"Gen {generation:3d} | "
+                f"Water: {current_best['water_added']:3d}L, "
+                f"N: {current_best['N_added']:3d}kg, "
+                f"P: {current_best['P_added']:3d}kg, "
+                f"K: {current_best['K_added']:3d}kg | "
+                f"Fitness: {current_best_fitness:.2f}")
+            
+            # Early termination if goal reached
             if self.problem.goalstate(Node(best_state)):
-                print(f"Goal state reached at generation {generation}!")
+                print(f"\nGoal state reached at generation {generation}!")
                 break
                 
             # Create new population
             new_population = []
             
             # Elitism - keep the best 2 individuals
-            new_population.extend([fitness_values[0][0], fitness_values[1][0]])
+            new_population.extend([current_best, population[1]])
             
             # Fill the rest of the population with offspring
             while len(new_population) < self.population_size:
-                # Select parents
                 if self.selection_method == 'tournament':
                     parent1 = self.tournament_selection(population)
                     parent2 = self.tournament_selection(population)
                 elif self.selection_method == 'roulette':
                     parent1 = self.roulette_wheel_selection(population, self.problem)
                     parent2 = self.roulette_wheel_selection(population, self.problem)
-                else:
-                    raise ValueError(f"Unknown selection method: {self.selection_method}")
                 
-                # Crossover
                 offspring = self.resource_crossover(parent1, parent2)
                 
-                # Mutation
                 if random.random() < self.mutation_rate:
                     offspring = self.mutate(offspring)
                 
                 new_population.append(offspring)
             
-            # Replace old population with new one
             population = new_population
         
         # Final result
         result_state = self.problem.apply_action(self.problem.initial_state.copy(), best_individual)
         cost = self.problem.cost_function(best_individual)
+        
+        print("\n=== FINAL BEST SOLUTION ===")
+        print(f"{'Resource':<15} | {'Amount Added':<15}")
+        print("-" * 30)
+        print(f"{'Water':<15} | {best_individual['water_added']:<15} L")
+        print(f"{'Nitrogen (N)':<15} | {best_individual['N_added']:<15} kg")
+        print(f"{'Phosphorus (P)':<15} | {best_individual['P_added']:<15} kg")
+        print(f"{'Potassium (K)':<15} | {best_individual['K_added']:<15} kg")
+        print(f"\nTotal Optimization Cost: {cost:.2f}")
         
         return best_individual, result_state, cost
 
@@ -281,7 +303,7 @@ def test_optimization_ga():
         ga = GeneticAlgorithm(
             problem,
             population_size=30,
-            generations=10,
+            generations=30,
             mutation_rate=0.5,
             selection_method=selection_method
         )

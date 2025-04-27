@@ -343,7 +343,7 @@ def main():
     
     # Now read the CSV
     try:
-        df = pd.read_csv("FS25.csv")
+        df = pd.read_csv("src\core\entities\FS25.csv")
         farm_problem = optimization_problem(initial_state, df)        
         initial_node = Node(initial_state)
         solution_path = farm_problem.solve()
