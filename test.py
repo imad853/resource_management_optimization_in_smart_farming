@@ -334,15 +334,13 @@ class optimization_problem:
         N_options = [-3, 0, 3, 6] if needs_adjustment['N'] else [0]
         P_options = [-3, 0, 3, 6] if needs_adjustment['P'] else [0]
         K_options = [-3, 0, 3, 6] if needs_adjustment['K'] else [0]
-        irrigation_options = [-1, 0, 1, 2] if needs_adjustment['irrigation'] else [0]
         
-        for water, n, p, k, irrigation in itertools.product(water_options, N_options, P_options, K_options, irrigation_options):
+        for water, n, p, k in itertools.product(water_options, N_options, P_options, K_options):
             action = {
                 "water_added": water,
                 "N_added": n,
                 "P_added": p,
                 "K_added": k,
-                "irrigation_update": irrigation
             }
             
             # Additional validation to ensure actions make sense
@@ -366,16 +364,7 @@ class optimization_problem:
                         valid = False
                     if current > target and val >= 0:
                         valid = False
-            
-            # Irrigation
-            if needs_adjustment['irrigation']:
-                current = state['soil_moisture']
-                target = self.goal.optimal_soil_moisture
-                if current < target and irrigation <= 0:
-                    valid = False
-                if current > target and irrigation >= 0:
-                    valid = False
-            
+
             if valid:
                 valid_actions.append(action)
         
@@ -400,17 +389,6 @@ class optimization_problem:
             if not (self.optimal_ranges[nutrient][0] <= node.state[nutrient] <= self.optimal_ranges[nutrient][1]):
                 new_node.state[nutrient] += action[f"{nutrient}_added"]
         
-        # Only adjust irrigation if soil moisture needs adjustment
-        if (new_node.state['irrigation_frequency'] + action["irrigation_update"] >=1 and new_node.state['irrigation_frequency'] + action["irrigation_update"] <= 4) :
-            if not (self.optimal_ranges['soil_moisture'][0] <= node.state['soil_moisture'] <= self.optimal_ranges['soil_moisture'][1]):
-                moisture_increase_per_week = self.transition_model["increase_irrigation_frequency"]["soil_moisture_increase_per_week"][soil_type]
-                delta_moisture = action["irrigation_update"] * moisture_increase_per_week
-                new_node.state['soil_moisture'] += delta_moisture
-                new_node.state['irrigation_frequency'] += action["irrigation_update"]
-                uptake_per_1pct = self.transition_model["increase_irrigation_frequency"]["npk_uptake_increase_per_1_percent_moisture"][soil_type]
-                for nutrient in ['N', 'P', 'K']:
-                    new_node.state[nutrient] += delta_moisture * uptake_per_1pct[nutrient]
-
         return new_node
 
     def expand_node(self, node):
@@ -517,30 +495,51 @@ class optimization_problem:
         
         print(f"⚠️ Stopped after {steps} steps (no solution found or max steps reached).")
         return None
+    
+
+    def calculate_moisture_increase(self,soil_type, depth_cm=30):
+
+        soil_types = {
+        "Sandy": {"bulk_density": 1.43},  # g/cm³
+        "Loamy": {"bulk_density": 1.43},  # g/cm³
+        "Clay": {"bulk_density": 1.33}    # g/cm³
+        }
+        
+        """
+        Calculate how much 1L of water will increase soil moisture in 1m² area
+        
+        Parameters:
+        - soil_type: "Sandy", "Loamy", or "Clay"
+        - depth_cm: Soil depth in centimeters (default 30cm)
+        
+        Returns:
+        - Moisture increase percentage
+        """
+        water_volume_cm3 = 1000  # 1L water = 1000 cm³
+        area_cm2 = 10000         # 1m² = 10000 cm²
+        soil_volume_cm3 = area_cm2 * depth_cm
+        bulk_density = soil_types[soil_type]["bulk_density"]
+        soil_mass_g = soil_volume_cm3 * bulk_density
+        moisture_increase = (water_volume_cm3 / soil_mass_g) * 100
+        return round(moisture_increase, 2)
+    
+
     def _transition_model(self):
+        # Calculate moisture increases for each soil type (1: Sandy, 2: Loamy, 3: Clay)
         return {
             "add_water": {
                 "units": "1 L/m²",
-                "soil_moisture_increase_per_L": {"1": 1.0, "2": 0.6, "3": 0.3},
-                "npk_uptake_increase_per_1_percent_moisture": {
-                    "1": {"N": 0.02, "P": 0.015, "K": 0.018},
-                    "2": {"N": 0.025, "P": 0.02, "K": 0.022},
-                    "3": {"N": 0.015, "P": 0.025, "K": 0.02}
-                }
-            },
-            "increase_irrigation_frequency": {
-                "units": "1 extra irrigation/week",
-                "soil_moisture_increase_per_week": {
-                    "1": 0.75,
-                    "2": 0.9,
-                    "3": 1.0
+                "soil_moisture_increase_per_L": {
+                    "1": self.calculate_moisture_increase("Sandy"),
+                    "2": self.calculate_moisture_increase("Loamy"),
+                    "3": self.calculate_moisture_increase("Clay")
                 },
                 "npk_uptake_increase_per_1_percent_moisture": {
-                    "1": {"N": 0.025, "P": 0.015, "K": 0.02},
-                    "2": {"N": 0.03, "P": 0.02, "K": 0.025},
-                    "3": {"N": 0.02, "P": 0.03, "K": 0.025}
+                    "1": {"N": 0.2, "P": 0.15, "K": 0.18},
+                    "2": {"N": 0.25, "P": 0.2, "K": 0.22},
+                    "3": {"N": 0.15, "P": 0.25, "K": 0.2}
                 }
-            },
+            }
         }
 
     def cost_function(self, state, action):
