@@ -287,104 +287,130 @@ class optimization_problem:
 
     def heuristic(self, state):
         p = self.priorities()
-        deviation_score = (
-            p['water_priority'] * self.optimal_distance_calc('soil_moisture', state['soil_moisture']) +
-            p['fertilizer_priority'] * self.optimal_distance_calc('N', state['N']) +
-            p['fertilizer_priority'] * self.optimal_distance_calc('P', state['P']) +
-            p['fertilizer_priority'] * self.optimal_distance_calc('K', state['K'])
-        )
-        return deviation_score + p['irrigation_frequency_priority']
+        deviation_score = 0
+        
+        # Only consider parameters that are outside their optimal ranges
+        if not (self.optimal_ranges['soil_moisture'][0] <= state['soil_moisture'] <= self.optimal_ranges['soil_moisture'][1]):
+            deviation_score += p['water_priority'] * self.optimal_distance_calc('soil_moisture', state['soil_moisture'])
+        
+        nutrient_priority = p['fertilizer_priority']
+        for nutrient in ['N', 'P', 'K']:
+            if not (self.optimal_ranges[nutrient][0] <= state[nutrient] <= self.optimal_ranges[nutrient][1]):
+                deviation_score += nutrient_priority * self.optimal_distance_calc(nutrient, state[nutrient])
+        
+        # Only consider irrigation if soil moisture needs adjustment
+        if not (self.optimal_ranges['soil_moisture'][0] <= state['soil_moisture'] <= self.optimal_ranges['soil_moisture'][1]):
+            deviation_score += p['irrigation_frequency_priority']
+        
+        return deviation_score
 
     def get_valid_actions(self, state):
         valid_actions = []
         
-        water_options = [-3,-2, 0,2, 3]
-        N_options = [-3, 0, 3, 6]
-        P_options = [-3, 0, 3, 6]
-        K_options = [-3, 0, 3, 6]
-        irrigation_options = [-1, 0, 1, 2]
+        # Determine which parameters need adjustment
+        needs_adjustment = {
+            'soil_moisture': not (self.optimal_ranges['soil_moisture'][0] <= state['soil_moisture'] <= self.optimal_ranges['soil_moisture'][1]),
+            'N': not (self.optimal_ranges['N'][0] <= state['N'] <= self.optimal_ranges['N'][1]),
+            'P': not (self.optimal_ranges['P'][0] <= state['P'] <= self.optimal_ranges['P'][1]),
+            'K': not (self.optimal_ranges['K'][0] <= state['K'] <= self.optimal_ranges['K'][1]),
+            'irrigation': not (self.optimal_ranges['soil_moisture'][0] <= state['soil_moisture'] <= self.optimal_ranges['soil_moisture'][1])
+        }
         
-        for water, n, p, k, irrigation in itertools.product(water_options, N_options, P_options, K_options, irrigation_options):
+        # Generate base action with no changes
+        base_action = {
+            "water_added": 0,
+            "N_added": 0,
+            "P_added": 0,
+            "K_added": 0,
+            "irrigation_update": 0
+        }
+        
+        # If no parameters need adjustment, return only the base action
+        if not any(needs_adjustment.values()):
+            return [base_action]
+        
+        # Generate possible actions only for parameters that need adjustment
+        water_options = [-3, -2, 0, 2, 3] if needs_adjustment['soil_moisture'] else [0]
+        N_options = [-3, 0, 3, 6] if needs_adjustment['N'] else [0]
+        P_options = [-3, 0, 3, 6] if needs_adjustment['P'] else [0]
+        K_options = [-3, 0, 3, 6] if needs_adjustment['K'] else [0]
+        
+        for water, n, p, k in itertools.product(water_options, N_options, P_options, K_options):
             action = {
                 "water_added": water,
                 "N_added": n,
                 "P_added": p,
                 "K_added": k,
-                "irrigation_update": irrigation
             }
             
+            # Additional validation to ensure actions make sense
             valid = True
             
             # Soil moisture
-            soil_moisture_diff = self.optimal_distance_calc('soil_moisture', state['soil_moisture'])
-            if soil_moisture_diff > 0 and water <= 0: ## invalid water amount
-                valid = False
-            if soil_moisture_diff < 0 and water > 0:   
-                valid = False
+            if needs_adjustment['soil_moisture']:
+                current = state['soil_moisture']
+                target = self.goal.optimal_soil_moisture
+                if current < target and water <= 0:
+                    valid = False
+                if current > target and water >= 0:
+                    valid = False
             
             # Nutrients
             for nutrient, val in zip(['N', 'P', 'K'], [n, p, k]):
-                nutrient_diff = self.optimal_distance_calc(nutrient, state[nutrient])
-                if nutrient_diff > 0 and val <= 0:
-                    valid = False
-                if nutrient_diff < 0 and val > 0:
-                    valid = False
-            
-            # Irrigation
-            if soil_moisture_diff > 0 and irrigation <= 0:
-                valid = False
-            if soil_moisture_diff < 0 and irrigation > 0:
-                valid = False
-            
+                if needs_adjustment[nutrient]:
+                    current = state[nutrient]
+                    target = getattr(self.goal, f'optimal_{nutrient.lower()}')
+                    if current < target and val <= 0:
+                        valid = False
+                    if current > target and val >= 0:
+                        valid = False
+
             if valid:
                 valid_actions.append(action)
         
         return valid_actions
+    
+    def evaporation_factor(self):
+        daily_moisture_loss = 0.3 * self.initial_state['temperature'] + 0.1 * self.initial_state['sunlight_exposure'] + 0.04 * self.initial_state['wind_speed'] + 0.01 *(100-self.initial_state['humidity']) * self.initial_state['soil_type'] * self.initial_state['growth_stage']
+        return max(daily_moisture_loss, 0.01)  # prevent zero or negative values
+    
+    def calculate_drought_time(self, node):
+        goal_node =  node.copy()
+        moisture_difference = goal_node.state['soil_moisture'] - self.initial_state['soil_moisture']
+        soil_reset_duration = moisture_difference / self.evaporation_factor()
+        return soil_reset_duration
+    
+    def get_irrigation_frequency(self, node):
+        return   int  (7 / self.calculate_drought_time(node))
+
 
     def apply_action(self, node, action):
         soil_type = str(node.state['soil_type'])
+        water_source = str(node.state['water_source'])
         new_node = node.copy()
-        delta_moisture = 0
-    
-        # Apply water action
-        if action["water_added"] > 0:
+        
+        # Only apply water if soil moisture needs adjustment
+        if not (self.optimal_ranges['soil_moisture'][0] <= node.state['soil_moisture'] <= self.optimal_ranges['soil_moisture'][1]):
             moisture_per_L = self.transition_model["add_water"]["soil_moisture_increase_per_L"][soil_type]
             delta_moisture = action["water_added"] * moisture_per_L
             new_node.state['soil_moisture'] += delta_moisture
+            ##### impact on ph level#####
+            new_node.state["ph"] += self.transition_model["add_water"]["ph_change_per_L_by_water_source"][water_source][soil_type]
             uptake_per_1pct = self.transition_model["add_water"]["npk_uptake_increase_per_1_percent_moisture"][soil_type]
             for nutrient in ['N', 'P', 'K']:
                 new_node.state[nutrient] += delta_moisture * uptake_per_1pct[nutrient]
-                new_node.state[nutrient] = max(new_node.state[nutrient], 1.0)
-    
-        new_node.state['water_used'] += action["water_added"]
-    
-        # Apply fertilizer action
-        for nutrient in ['N', 'P', 'K']:
-            new_node.state[nutrient] += action[f"{nutrient}_added"]
+            new_node.state['water_used'] += action["water_added"]
         
-        # Apply irrigation frequency update
-        if action["irrigation_update"] > 0 and node.state.get("irrigation_frequency", 0) < 5:
-            moisture_increase_per_week = self.transition_model["increase_irrigation_frequency"]["soil_moisture_increase_per_week"][soil_type]
-            delta_moisture = action["irrigation_update"] * moisture_increase_per_week
-            new_node.state['soil_moisture'] += delta_moisture
-            new_node.state['irrigation_frequency'] += action["irrigation_update"]
-            
-            uptake_per_1pct = self.transition_model["increase_irrigation_frequency"]["npk_uptake_increase_per_1_percent_moisture"][soil_type]
-            for nutrient in ['N', 'P', 'K']:
-                new_node.state[nutrient] += delta_moisture * uptake_per_1pct[nutrient]
-                new_node.state[nutrient] = max(new_node.state[nutrient], 1.0)
-
-        # Print current NPK values after applying action
-        print("\nAfter applying action:")
-        print(f"  Water added: {action['water_added']}L")
-        print(f"  N added: {action['N_added']}kg, P added: {action['P_added']}kg, K added: {action['K_added']}kg")
-        print(f"  New soil moisture: {new_node.state['soil_moisture']:.3f} (Target: {self.goal.optimal_soil_moisture:.1f} ± {self.optimal_ranges['soil_moisture'][1]-self.goal.optimal_soil_moisture:.1f})")
-        print("Current nutrient levels:")
-        print(f"  N: {new_node.state['N']:.3f} (Target: {self.goal.optimal_n:.1f} ± {self.optimal_ranges['N'][1]-self.goal.optimal_n:.1f})")
-        print(f"  P: {new_node.state['P']:.3f} (Target: {self.goal.optimal_p:.1f} ± {self.optimal_ranges['P'][1]-self.goal.optimal_p:.1f})")
-        print(f"  K: {new_node.state['K']:.3f} (Target: {self.goal.optimal_k:.1f} ± {self.optimal_ranges['K'][1]-self.goal.optimal_k:.1f})")
-    
+        # Only apply fertilizer if nutrient needs adjustment
+        for nutrient in ['N', 'P', 'K']:
+            if not (self.optimal_ranges[nutrient][0] <= node.state[nutrient] <= self.optimal_ranges[nutrient][1]):
+                new_node.state[nutrient] += action[f"{nutrient}_added"]
+                ####impact on ph level of the soil#####
+                new_node.state['ph']+= action[f"{nutrient}_added"] * self.transition_model["add_fertilizer"]["ph_change_per_application"][nutrient][soil_type]
+                new_node.state['fertilizer_used'] += action[f"{nutrient}_added"] * new_node.state[f"{nutrient}_percentage"]
+        
         return new_node
+    
 
     def expand_node(self, node):
         children = []
@@ -404,7 +430,7 @@ class optimization_problem:
             path.append(node)
             node = node.parent
         return path[::-1]  # Reverse to get start-to-goal order
-
+    
     def solve(self):
         print("\n=== Starting A* Search ===")
         print(f"Initial state: {self.initial_state}")
@@ -422,6 +448,9 @@ class optimization_problem:
 
             # Check if this is a goal state BEFORE adding to closed set
             if self.goalstate(current_node):
+            # Calculate irrigation frequency
+                current_node.state['irrigation_frequency'] = self.get_irrigation_frequency(current_node)
+
                 print(f"✅ Solution found after {steps} steps!")
                 return self.reconstruct_path(current_node)
 
@@ -460,7 +489,7 @@ class optimization_problem:
         
         # Keep track of steps for reporting
         steps = 0
-        max_steps = 500  # Safety limit to prevent infinite loops
+        max_steps = 1000  # Safety limit to prevent infinite loops
         
         while open_list and steps < max_steps:
             # Get node with lowest heuristic value
@@ -470,6 +499,7 @@ class optimization_problem:
             # Check if this is a goal state
             print(f"\nStep {steps}, checking node with heuristic: {current_node.f:.2f}")
             if self.goalstate(current_node):
+                current_node.state['irrigation_frequency'] = self.get_irrigation_frequency(current_node)
                 print(f"✅ Solution found after {steps} steps!")
                 return self.reconstruct_path(current_node)
             
@@ -490,31 +520,68 @@ class optimization_problem:
         
         print(f"⚠️ Stopped after {steps} steps (no solution found or max steps reached).")
         return None
+    
+
+    def calculate_moisture_increase(self,soil_type, depth_cm=30):
+
+        soil_types = {
+        "Sandy": {"bulk_density": 1.43},  # g/cm³
+        "Loamy": {"bulk_density": 1.43},  # g/cm³
+        "Clay": {"bulk_density": 1.33}    # g/cm³
+        }
+
+        """
+        Calculate how much 1L of water will increase soil moisture in 1m² area
+        
+        Parameters:
+        - soil_type: "Sandy", "Loamy", or "Clay"
+        - depth_cm: Soil depth in centimeters (default 30cm)
+        
+        Returns:
+        - Moisture increase percentage
+        """
+        water_volume_cm3 = 1000  # 1L water = 1000 cm³
+        area_cm2 = 10000         # 1m² = 10000 cm²
+        soil_volume_cm3 = area_cm2 * depth_cm
+        bulk_density = soil_types[soil_type]["bulk_density"]
+        soil_mass_g = soil_volume_cm3 * bulk_density
+        moisture_increase = (water_volume_cm3 / soil_mass_g) * 100
+        return round(moisture_increase, 2)
+    
+
     def _transition_model(self):
+    # Calculate moisture increases for each soil type (1: Sandy, 2: Loamy, 3: Clay)
         return {
             "add_water": {
                 "units": "1 L/m²",
-                "soil_moisture_increase_per_L": {"1": 1.0, "2": 0.6, "3": 0.3},
-                "npk_uptake_increase_per_1_percent_moisture": {
-                    "1": {"N": 0.02, "P": 0.015, "K": 0.018},
-                    "2": {"N": 0.025, "P": 0.02, "K": 0.022},
-                    "3": {"N": 0.015, "P": 0.025, "K": 0.02}
-                }
-            },
-            "increase_irrigation_frequency": {
-                "units": "1 extra irrigation/week",
-                "soil_moisture_increase_per_week": {
-                    "1": 0.75,
-                    "2": 0.9,
-                    "3": 1.0
+                "soil_moisture_increase_per_L": {
+                    "1": self.calculate_moisture_increase("Sandy"),
+                    "2": self.calculate_moisture_increase("Loamy"),
+                    "3": self.calculate_moisture_increase("Clay")
                 },
                 "npk_uptake_increase_per_1_percent_moisture": {
-                    "1": {"N": 0.025, "P": 0.015, "K": 0.02},
-                    "2": {"N": 0.03, "P": 0.02, "K": 0.025},
-                    "3": {"N": 0.02, "P": 0.03, "K": 0.025}
+                    "1": {"N": 0.2, "P": 0.15, "K": 0.18},
+                    "2": {"N": 0.25, "P": 0.2, "K": 0.22},
+                    "3": {"N": 0.15, "P": 0.25, "K": 0.2}
+                },
+                "ph_change_per_L_by_water_source": {
+                    
+                    "1": {"1": -0.01, "2": -0.015, "3": -0.01},   
+                    "2": {"1": 0.01, "2": 0.015, "3": 0.01}, 
+                    "3": {"1": -0.02, "2": -0.025, "3": -0.02}   
                 }
             },
+            "add_fertilizer": {
+                "units": "per application",
+                "ph_change_per_application": {
+                    # Based on general acidifying potential
+                    "N": {"1": 0.01, "2": 0.015, "3": 0.01},
+                    "P": {"1": -0.01, "2": -0.015, "3": -0.01},
+                    "K": {"1": 0.00, "2": 0.00, "3": 0.00},
+                }
+            }
         }
+
 
     def cost_function(self, state, action):
         wa = state['water_availability']
@@ -538,30 +605,35 @@ class optimization_problem:
         else:
             return water + fert
 
-# === Initial state ===
-initial_state = {
-    'soil_moisture': 6.28,
-    'N': 24.33,
-    'P': 24.83,
-    'K': 20.33,
-    'ph': 6.5,
-    'label': "rice",
-    'soil_type': 3,
-    'temperature': 28,
-    'crop_density': 14,
-    'humidity': 45,
-    'irrigation_frequency': 1,
-    'growth_stage': 1,
-    'growth_type': "monocot",
-    'water_availability': "medium",
-    'fertilizer_availability': "high",
-    'water_used': 0.0,
-    'fertilizer_used': 0.0
-}
 
-def main():
+
+def main(soil_moisture,N,P,K,N_percent,P_percent,K_percent,ph,label,soil_type,temperature,crop_density,humidity,sunlight_exposure,water_source,wind_speed,growth_stage):
     import os
-    
+    # === Initial state ===
+    initial_state = {
+        'soil_moisture': soil_moisture,                
+        'N': N,                            
+        'P': P,                           
+        'K': K,                            
+        'N_percentage': N_percent,                
+        'P_percentage': P_percent,
+        'K_percentage': K_percent,
+        'ph': ph,                            
+        'label': label,
+        'soil_type': soil_type,                       
+        'temperature': temperature,                    
+        'crop_density': crop_density,                   
+        'humidity': humidity,                       
+        'sunlight_exposure':sunlight_exposure,             
+        'water_source': water_source,                    
+        'wind_speed': wind_speed,                      
+        'growth_stage': growth_stage,                    
+        'water_availability': "medium",
+        'fertilizer_availability': "medium",
+        'water_used': 0.0,
+        'fertilizer_used': 0.0
+    }
+
     # Set working directory to script locati
     
     # Now read the CSV

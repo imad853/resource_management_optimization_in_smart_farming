@@ -1,3 +1,5 @@
+import matplotlib.pyplot as plt
+import seaborn as sns
 import pandas as pd
 import numpy as np
 
@@ -45,7 +47,7 @@ class GoalState:
         self.optimal_n = filtered['N'].mean()
         self.optimal_p = filtered['P'].mean()
         self.optimal_k = filtered['K'].mean()
-        self.optimal_WUE = filtered['water_usage_efficiency']
+        self.optimal_WUE = filtered['water_usage_efficiency'].mean()
 
         print(f"\n Average Original Soil Moisture: {original_soil_moisture_avg:.2f}%")
         print(f"\n Standard Deviation of Original Soil Moisture: {original_soil_moisture_std:.2f}%")
@@ -136,3 +138,50 @@ class GoalState:
 
         return self.optimal_soil_moisture
 
+
+# Conversion constants
+L_PER_HA_TO_INCHES = 0.1 / 25.4  # Convert L/ha to inches (1 L/ha = 0.1 mm, 1 inch = 25.4 mm)
+
+def estimate_crop_yield(water_liters_per_ha, crop_type):
+    df = pd.read_csv("src\core\entities\FS25.csv")
+    test = GoalState()
+    test.estimate_optimal_params(crop_type,2,1,10,df)
+    return water_liters_per_ha * test.optimal_WUE
+
+def plot_yield_vs_water(crop_types, max_water_L_ha=6_000_000, step=200_000):
+    """
+    Plots yield vs. water used (L/ha) for specified crops.
+    
+    Parameters:
+    crop_types (list): List of crop types to plot
+    max_water_L_ha (int): Maximum water amount to plot (L/ha)
+    step (int): Water increment step (L/ha)
+    """
+    plt.figure(figsize=(10, 6))
+    
+    # Generate water levels
+    water_levels = np.arange(0, max_water_L_ha + step, step)
+    
+    # Plot each crop type
+    for crop in crop_types:
+        yields = [estimate_crop_yield(water, crop) for water in water_levels]
+        plt.plot(water_levels, yields, marker='o', label=crop)
+    
+    plt.title("Crop Yield vs. Water Applied (Liters per Hectare)")
+    plt.xlabel("Water Applied (L/ha)")
+    plt.ylabel("Estimated Yield (bushels/acre)")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+def main():
+    # Crop types to analyze
+    crop_types = ['maize','rice', 'mango']
+    
+    # Plot yield vs. water for all crops
+    plot_yield_vs_water(crop_types)
+    
+
+if __name__ == "__main__":
+    main()
