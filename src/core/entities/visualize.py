@@ -161,7 +161,7 @@ def plot_yield_vs_water(crop_types, max_water_L_ha=6_000_000, step=200_000):
     
     # Generate water levels
     water_levels = np.arange(0, max_water_L_ha + step, step)
-    
+    nutrients_levels = np.arange(0, 100, 10)  # Example nutrient levels
     # Plot each crop type
     for crop in crop_types:
         yields = [estimate_crop_yield(water, crop) for water in water_levels]
